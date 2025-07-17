@@ -129,7 +129,7 @@ You can see the random values generated from this distribution start at 100 ms, 
 
 ## Final Implementation and GitHub Hosting
 
-To see the complete implementation and run it yourself, you can find the project hosted on GitHub: [GitHub Repository](https://github.com/yourusername/streaming-text-generation)
+To see the complete implementation and run it yourself, you can find the project hosted on GitHub: [GitHub Repository](https://github.com/farid-moradi/streaming-text-generation)
 
 Below is a snippet that streams a string:
 
