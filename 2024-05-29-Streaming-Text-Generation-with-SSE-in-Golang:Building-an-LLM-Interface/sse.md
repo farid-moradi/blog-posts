@@ -1,6 +1,3 @@
-
-# Streaming Text Generation with SSE in Golang: Building an LLM Interface
-
 I was wondering what makes it possible for language model (LLM) interfaces to load words gradually. Initially, I thought about using **WebSockets**, but then I realized that many implementations rely on **HTTP streaming** and **Server-Sent Events (SSE)**. This led me to dive deeper into SSE and its implementation, which is particularly well-suited for this purpose. In this post, I'll guide you through understanding SSE and building a simple example using the Golang Echo framework. We'll also model word generation intervals and create a complete implementation hosted on GitHub.
 
 ## Introduction to SSE
@@ -10,53 +7,9 @@ Server-Sent Events (SSE) is a **server push technology** enabling a server to pu
 Here’s a basic example to illustrate how SSE works using the Golang Echo framework. First, let's set up our server:
 
 ### Simple Example with Golang Echo Framework
-
-```go
-package main
-
-import (
-	"fmt"
-	"net/http"
-	"time"
-
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
-)
-
-func main() {
-	// Create a new Echo instance
-	e := echo.New()
-
-	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: []string{"*"}, // Replace with your allowed origins
-	}))
-
-	// Define a route to handle the incremental text streaming
-	e.GET("/stream", func(c echo.Context) error {
-		c.Response().Header().Set("Content-Type", "text/event-stream")
-		c.Response().Header().Set("Cache-Control", "no-cache")
-		c.Response().Header().Set("Connection", "keep-alive")
-		c.Response().WriteHeader(http.StatusOK)
-
-		var wordList = []string{
-			"LLM", "Interface",
-		}
-
-		// Send text incrementally every second
-		for i := 0; i < len(wordList); i++ {
-			fmt.Fprintf(c.Response(), "data: %s\n\n", wordList[i])
-			c.Response().Flush()
-			time.Sleep(time.Second)
-		}
-
-		return nil
-	})
-
-	// Start the Echo server
-	e.Start(":8080")
-}
+```gist
+<script src="https://gist.github.com/farid-moradi/64114ce6d8fa78ef4977f0431dff0084.js"></script>
 ```
-
 This code sets up a simple SSE endpoint that sends a message to the client every second. You can see the updates in real-time in the browser’s network inspector.
 
 For SSE, specific **HTTP headers** need to be set in the server's response to properly communicate with the client. Here are the key headers that should be included:
@@ -72,7 +25,7 @@ In SSE, the server sends a specially formatted stream of text to the client. Eac
 
 In the example, the line `fmt.Fprintf(c.Response(), "data: %s\n\n", wordList[i])` sends a string formatted as `"data: %s\n\n"` where the payload is a word in `wordList`. The `c.Response().Flush()` call ensures that the message is immediately sent to the client without buffering.
 
-To visualize how SSE messages are received by the client, you can open your browser’s developer tools and inspect the Network tab. You’ll see individual SSE messages being streamed in real-time. Here you can see that it takes 2 seconds for the client to receive the response from the server (one second for each of the 2 words):
+To visualize how SSE messages are received by the client, you can open your browser’s developer tools and inspect the Network tab. You’ll see individual SSE messages being streamed in real-time. Here you can see that the entire response finishes in 2 s; the first word arrives after 1 s:
 
 ![Network Inspector](https://api.devfmd.xyz/uploads/a8fd9673-eac3-4fdb-b509-5413bc6715fa.png)
 
@@ -82,44 +35,11 @@ Here you can see the messages in the EventStream tab in the network inspect in t
 
 ## Mimicking Word Generation
 
-To mimic the process of word generation, we can model the time interval between generating the next word in milliseconds as a random variable that follows an exponential distribution with a **rate parameter** of 0.07, and a **location shift** of 100 milliseconds as the minimum. This creates a realistic simulation of the gradual word generation seen in LLM interfaces. A rate parameter of 0.07 means the mean of the distribution is approximately 14.29 milliseconds, adding to the minimum of 100 ms.
+To mimic the process of word generation, we can model the time interval between generating the next word in milliseconds as a random variable that follows an exponential distribution with a **rate parameter** of 0.07, and a **location shift** of 100 milliseconds as the minimum. This creates a realistic simulation of the gradual word generation seen in LLM interfaces. A rate parameter of 0.07 means the mean of the distribution is approximately 14.29 milliseconds, so the expected interval is 100 ms + 14.29 ms ≈ 114 ms.
 
 Here's the Python code to plot the exponential distribution of the random variable we are examining:
-
-```python
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-# Set the random seed for reproducibility
-np.random.seed(42)
-
-# Define the rate parameter (lambda) and the shift
-lambda_param = 0.07  # Rate parameter for the exponential distribution
-shift = 100  # Minimum interval time in milliseconds
-
-# Generate random intervals using the exponential distribution and apply the shift
-num_intervals = 10000  # Number of intervals to generate
-intervals = np.random.exponential(scale=1/lambda_param, size=num_intervals) + shift
-
-# Plot the histogram of the generated intervals
-plt.figure(figsize=(10, 6))
-sns.histplot(intervals, bins=30, kde=True, stat="density", color='skyblue', label='Histogram of Intervals')
-
-# Plot the theoretical PDF of the shifted exponential distribution
-x = np.linspace(shift, max(intervals), 10000)
-pdf = lambda_param * np.exp(-lambda_param * (x - shift))
-plt.plot(x, pdf, 'r-', lw=2, label='Theoretical Shifted Exponential PDF')
-
-# Add labels and legend
-plt.xlabel('Interval Time (ms)')
-plt.ylabel('Density')
-plt.title('Histogram and Theoretical PDF of Shifted Exponential Distribution')
-plt.legend()
-plt.grid(True)
-
-# Show the plot
-plt.show()
+```gist
+<script src="https://gist.github.com/farid-moradi/b51c827fe99be6935b779150c38277c4.js"></script>
 ```
 
 This generates the following plot:
@@ -133,69 +53,9 @@ To see the complete implementation and run it yourself, you can find the project
 
 Below is a snippet that streams a string:
 
-```go
-package main
-
-import (
-	"fmt"
-	"math/rand"
-	"net/http"
-	"strings"
-	"time"
-
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
-)
-
-const text = `
-This repository contains code examples and an implementation for building a streaming text generation interface using Server-Sent Events (SSE) in Golang. SSE is a lightweight protocol for real-time communication over HTTP, ideal for scenarios like Large Language Model (LLM) interfaces.
-`
-
-// ExpRand generates a random value from an exponential distribution
-// with the given rate parameter (lambda) and location shift (mu).
-func ExpRand(lambda, mu float64) float64 {
-	// Generate a random value from the standard exponential distribution
-	u := rand.ExpFloat64()
-
-	// Apply the rate parameter (lambda)
-	x := u / lambda
-
-	// Add the location shift (mu)
-	return x + mu
-}
-
-func main() {
-	// Create a new Echo instance
-	e := echo.New()
-
-	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: []string{"*"}, // Replace with your allowed origins
-	}))
-
-	// Define a route to handle the incremental text streaming
-	e.GET("/stream", func(c echo.Context) error {
-		c.Response().Header().Set("Content-Type", "text/event-stream")
-		c.Response().Header().Set("Cache-Control", "no-cache")
-		c.Response().Header().Set("Connection", "keep-alive")
-		c.Response().WriteHeader(http.StatusOK)
-
-		words := strings.Fields(text)
-		for _, word := range words {
-			fmt.Fprintf(c.Response(), "data: %s\n\n", word)
-			c.Response().Flush()
-			time.Sleep(time.Duration(ExpRand(0.07, 100)) * time.Millisecond)
-		}
-
-		return nil
-	})
-
-	// Start the Echo server
-	e
-
-.Start(":8080")
-}
+```gist
+<script src="https://gist.github.com/farid-moradi/64de111992d05a37696e6f6c771644e2.js"></script>
 ```
-
 
 We defined a new function named `ExpRand` to generate random numbers based on the exponential distribution we talked about. In the main function, we create a new Echo instance and set some general headers. Then we define a route named `stream` that accepts requests and uses the `Fields` method to split the `text` string into slices of substrings. Then we send the string word by word to the client. Finally, we start the Echo server to listen on port `8080`.
 
