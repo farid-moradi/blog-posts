@@ -4,33 +4,33 @@ In my [last post](../2026-07-05-Shipping-Real-Payments-over-HTTP-402/x402.md) I 
 
 ## PayAI: the five-minute facilitator
 
-PayAI's pitch is "no API keys, one env var," and that held up. The whole server is Coinbase's own `x402-express` middleware pointed at PayAI's URL:
+PayAI's pitch is "no API keys, one env var," and that held up. The whole server is the foundation's `@x402/express` middleware pointed at PayAI's URL:
 
 ```js
+const facilitator = new HTTPFacilitatorClient({ url: 'https://facilitator.payai.network' });
+
 app.use(paymentMiddleware(
-  payTo,
-  { 'GET /premium': { price: '$0.01', network: 'base-sepolia' } },
-  { url: 'https://facilitator.payai.network' },
+  { 'GET /premium': { accepts: [{ scheme: 'exact', price: '$0.01', network: 'eip155:84532', payTo }] } },
+  new x402ResourceServer(facilitator).register('eip155:84532', new ExactEvmScheme()),
 ));
 ```
 
-Curl it with no payment and you get a clean x402 v1 challenge: 402 status, JSON body, `accepts` array with the Base Sepolia USDC contract. Point `x402-fetch` at it with an unfunded wallet and the facilitator does exactly what it should:
+Curl it with no payment and you get a clean v2 challenge: 402 status, `{}` body, and a `PAYMENT-REQUIRED` header that decodes to the `accepts` array with the Base Sepolia USDC contract. PayAI's `/supported` endpoint lists both v1 and v2 kinds for every chain it covers, so older v1 clients keep settling against the same URL. Point `@x402/fetch` at it with an unfunded wallet and the facilitator does exactly what it should:
 
 ```
-"error": "invalid_exact_evm_insufficient_balance",
-"payer": "0x4B73E594edFaf51eC43F446cC741450033D4Bc7F"
+"error": "invalid_exact_evm_insufficient_balance"
 ```
 
-It recovered the payer address from the signature and checked the balance on-chain before ever attempting settlement. After funding the wallet with faucet USDC, the same request came back `200` with the content and a settlement receipt in the `X-PAYMENT-RESPONSE` header:
+though that line took more digging to see than it used to: a v2 rejection re-issues the challenge with the reason in the header's `error` field, and the body stays `{}`. To produce the error at all it had to recover the payer from the signature and check the balance on-chain, before ever attempting settlement. After funding the wallet with faucet USDC, the same request came back `200` with the content and a settlement receipt in the `PAYMENT-RESPONSE` header:
 
 ```json
 { "success": true,
-  "transaction": "0x71114fb4a5b9c939ed840d5031d526f0c742a3952482e421e222e0f3aa2c3e57",
+  "transaction": "0x363e9ad6ca0975d7e2abc2643c6f2c1c967e9a4b4f6404c4886f52906397a4e1",
   "network": "base-sepolia",
   "payer": "0x4b73e594edfaf51ec43f446cc741450033d4bc7f" }
 ```
 
-That's a real transaction hash. I pulled the receipt from Base Sepolia and the submitting address is PayAI's gas wallet, not mine; my wallet held USDC and zero ETH the whole time. So the gasless thing isn't marketing. The free tier is 10,000 settlements a month, they cover the network fees, and you don't even need an account for basic verify-and-settle. Hard to argue with.
+That's a real transaction hash. One small tell in it: I paid on `eip155:84532` and the receipt names the network `base-sepolia` — a v1 name leaking through a v2 receipt. I pulled the receipt from Base Sepolia and the submitting address is PayAI's gas wallet, not mine; my wallet held USDC and zero ETH the whole time. So the gasless thing isn't marketing. The free tier is 10,000 settlements a month, they cover the network fees, and you don't even need an account for basic verify-and-settle. Hard to argue with.
 
 ## thirdweb: more capable, sharper edges
 
@@ -47,9 +47,9 @@ const result = await settlePayment({
 });
 ```
 
-Note the header line, because this is where I lost an hour. thirdweb speaks **x402 v2**: the 402 challenge comes back base64-encoded in a `PAYMENT-REQUIRED` header with an empty body, CAIP-2 network IDs and all, and the client sends its payment in `PAYMENT-SIGNATURE`, not `X-PAYMENT`. The snippet in their own docs reads `request.headers.get("x-payment")`, which happily returns null when their own v2 client calls you, and `settlePayment` just re-issues the challenge. No error, no hint. Accept both headers and it works.
+Note the header line, because this is where I lost an hour. thirdweb uses the **v2 transport**: the 402 challenge comes back base64-encoded in a `PAYMENT-REQUIRED` header with an empty body, and the client sends its payment in `PAYMENT-SIGNATURE`, not `X-PAYMENT`. The snippet in their own docs reads `request.headers.get("x-payment")`, which happily returns null when their own v2 client calls you, and `settlePayment` just re-issues the challenge. No error, no hint. Accept both headers and it works.
 
-Two more v2 tripwires. Coinbase's `x402-fetch` client cannot talk to a thirdweb seller at all. It's v1-only, so it goes looking for the `accepts` array in the response body, finds `{}`, and dies; you need thirdweb's own `wrapFetchWithPayment`. And that wrapper takes a `Wallet`, not an `Account`, so a headless private-key setup needs `createWalletAdapter`. At least the error when you get that wrong (`wallet.getAccount is not a function`) says what it means.
+Two more tripwires, and the first one surprised me: the foundation's own v2 client can't pay a thirdweb seller either. thirdweb's transport is v2, but the requirement objects inside those headers are still v1-shaped — `maxAmountRequired` where the v2 spec says `amount`, resource fields inlined into each entry — so `@x402/fetch` dies mid-signing with `Cannot convert undefined to a BigInt`. It cuts the other way too: point thirdweb's client at a spec-shaped v2 seller and it bounces the challenge with a zod validation error demanding `maxAmountRequired`. Two SDKs, both calling themselves v2, unable to pay each other; for now you pair thirdweb with thirdweb and use their `wrapFetchWithPayment`. And that wrapper takes a `Wallet`, not an `Account`, so a headless private-key setup needs `createWalletAdapter`. At least the error when you get that wrong (`wallet.getAccount is not a function`) says what it means.
 
 Once through all that, the unfunded-wallet test came back with the most helpful rejection of the day:
 
@@ -119,14 +119,14 @@ and `/supported` returns the same shape the hosted facilitators serve:
 }
 ```
 
-Note the `x402Version: 2`. Like thirdweb, x402.rs speaks the v2 wire format, so pair it with v2-capable client SDKs or budget for the interop quirks above.
+Note the `x402Version: 2`. x402.rs speaks the spec's v2 — the same shapes the `@x402/*` reference SDKs emit, not thirdweb's dialect of it.
 
 The part nobody hosts for you: the signer. That `FACILITATOR_PRIVATE_KEY` wallet submits every `transferWithAuthorization` on-chain, so it needs native gas on every chain you settle, it needs monitoring, and it needs the same key hygiene as any hot wallet. This is exactly what you pay Coinbase or PayAI their $0.001 to worry about. Whether that trade is worth it comes down to volume and trust: past a million settlements a month the fees are real money, and if your product's story is "no intermediary can freeze payments," a facilitator you don't run is an intermediary.
 
 ## What I took away
 
-The v1/v2 split is not theoretical. Run one seller and one client from the same vendor and you'll never notice; mix vendors and things fail with empty bodies and nulls rather than errors. Until v2 is everywhere, accept both payment headers on the server and match your client SDK to whatever your seller speaks.
+The version split is not theoretical, and adopting v2 didn't close it. PayAI now answers v1 and v2 clients from the same URL and the reference SDKs are solid, yet a spec-conformant v2 client still can't pay a thirdweb seller, because the two sides disagree about what belongs inside the headers. Mixed pairs fail with empty bodies, nulls, and missing-field complaints rather than anything that says "version mismatch." Until that settles, match your client SDK to whatever your seller speaks — and if your settle API parses both formats (thirdweb's does), read both payment headers; it costs one line. The wire-format differences themselves are laid out in [the protocol post](../2026-07-05-Shipping-Real-Payments-over-HTTP-402/x402.md).
 
-On picking one: PayAI is the path of least resistance, has the best free tier in the business, and gives you a proper on-chain receipt; for selling API access I'd start there and not feel like I was settling. thirdweb buys you 170+ chains, any permit-capable ERC-20, and polished failure modes, at the cost of an account, a v2-only client stack, and a settlement receipt that points into their infrastructure instead of the chain. Coinbase's CDP facilitator stays the pick when compliance screening on settlements matters, since KYT baked into the payment rail isn't something the others offer. And self-hosting is genuinely a config file and a container away, if you have the appetite to babysit one more hot wallet. An open payment protocol where self-hosting is theoretical isn't really open; this one checks out.
+On picking one: PayAI is the path of least resistance, has the best free tier in the business, and gives you a proper on-chain receipt; for selling API access I'd start there and not feel like I was settling. thirdweb buys you 170+ chains, any permit-capable ERC-20, and polished failure modes, at the cost of an account, a client stack that currently only pairs with itself, and a settlement receipt that points into their infrastructure instead of the chain. Coinbase's CDP facilitator stays the pick when compliance screening on settlements matters, since KYT baked into the payment rail isn't something the others offer. And self-hosting is genuinely a config file and a container away, if you have the appetite to babysit one more hot wallet. An open payment protocol where self-hosting is theoretical isn't really open; this one checks out.
 
 *Everything I ran here — the PayAI and thirdweb sellers and clients, a Go seller that works with any standard facilitator, and the working x402.rs config under `selfhost/` — is in [github.com/farid-moradi/x402-facilitator-demos](https://github.com/farid-moradi/x402-facilitator-demos).*
